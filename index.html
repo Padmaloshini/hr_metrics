@@ -1,0 +1,441 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>HR Metrics – Daily Summary (Master Dump)</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f7f9fc; }
+    .card { background: #ffffff; border-radius: 8px; padding: 16px 20px; box-shadow: 0 2px 6px rgba(0,0,0,0.08); max-width: 1200px; margin: 0 auto 20px auto; }
+    h2, h3 { margin-top: 0; color: #1f4e79; }
+    .form-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 12px; }
+    .form-group { display: flex; flex-direction: column; font-size: 13px; }
+    .form-group label { margin-bottom: 4px; font-weight: 600; color: #333; }
+    input[type="file"], input[type="date"] { padding: 6px 8px; font-size: 13px; border: 1px solid #ccc; border-radius: 4px; }
+    button { background: #1f4e79; color: #fff; border: none; border-radius: 4px; padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600; margin-right: 8px; }
+    button:hover { background: #163553; }
+    button.clear { background: #dc3545; }
+    button.clear:hover { background: #c82333; }
+    #downloadLink { font-size: 13px; text-decoration: none; color: #1f4e79; font-weight: 600; }
+    #downloadLink:hover { text-decoration: underline; }
+    table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 11px; background: #fff; }
+    th, td { border: 1px solid #d0d7e2; padding: 4px 6px; text-align: right; white-space: nowrap; }
+    th { background: #e3ecf8; text-align: center; font-weight: 600; color: #333; }
+    th.sticky-header { position: sticky; top: 0; z-index: 1; }
+    td:first-child, th:first-child { text-align: left; }
+    #tableWrapper, #typeTableWrapper { max-height: 400px; overflow: auto; border: 1px solid #d0d7e2; border-radius: 4px; background: #fff; }
+    #log { font-size: 11px; color: #555; white-space: pre-wrap; margin-top: 6px; }
+    .tab-buttons { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tab-btn { padding: 8px 16px; border: 1px solid #d0d7e2; background: #fff; cursor: pointer; border-radius: 4px; font-size: 13px; }
+    .tab-btn.active { background: #1f4e79; color: #fff; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap: 12px; margin-top: 10px; }
+    .kpi-card { background: linear-gradient(135deg,#667eea 0%,#764ba2 100%); color:#fff; padding:12px 14px; border-radius:8px; }
+    .kpi-value { font-size:20px; font-weight:700; }
+    .kpi-label { font-size:11px; opacity:0.9; }
+  </style>
+</head>
+<body>
+
+  <div class="card" id="topCard">
+    <h2>Daily Headcount & Attrition Summary – Master Dump</h2>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="fileInput">master-dump.xlsx</label>
+        <input type="file" id="fileInput" accept=".xlsx,.xls">
+      </div>
+      <div class="form-group">
+        <label for="fromDate">From date</label>
+        <input type="date" id="fromDate">
+      </div>
+      <div class="form-group">
+        <label for="toDate">To date</label>
+        <input type="date" id="toDate">
+      </div>
+      <div class="form-group" style="margin-top:18px;">
+        <button onclick="processFile()">Generate Summary</button>
+        <button class="clear" onclick="clearData()">Clear</button>
+      </div>
+      <div class="form-group" style="margin-top:22px;">
+        <a id="downloadLink" style="display:none;">Download Summary (Excel)</a>
+      </div>
+      <div class="form-group" style="margin-top:18px;">
+        <button onclick="downloadSample()">Download Sample File</button>
+      </div>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <div class="card" id="kpiCard" style="display:none;">
+    <h3>Period KPIs (Selected Dates)</h3>
+    <div class="kpi-grid" id="kpiGrid"></div>
+  </div>
+
+  <div class="card">
+    <div class="tab-buttons">
+      <button class="tab-btn active" data-tab="headcount">Headcount Summary</button>
+      <button class="tab-btn" data-tab="type">Employee Type</button>
+    </div>
+
+    <div id="headcount-tab" class="tab-content active">
+      <h3>Summary – Detail View</h3>
+      <div id="tableWrapper">
+        <div id="tableContainer" style="font-size:12px;color:#777;">No data yet. Upload master-dump.xlsx and generate.</div>
+      </div>
+    </div>
+
+    <div id="type-tab" class="tab-content">
+      <h3>Employee Type – Closing HC</h3>
+      <div id="typeTableWrapper">
+        <div id="typeTableContainer" style="font-size:12px;color:#777;">No data yet. Upload master-dump.xlsx and generate.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- local SheetJS bundle -->
+  <script src="xlsx.full.min.js"></script>
+
+  <script>
+    let globalSummary = null;
+    let globalTypeSummary = null;
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const buttons = document.querySelectorAll('.tab-btn');
+      buttons.forEach(btn => {
+        btn.addEventListener('click', function () {
+          const tab = this.getAttribute('data-tab');
+          buttons.forEach(b => b.classList.remove('active'));
+          this.classList.add('active');
+          document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+          document.getElementById(tab + '-tab').classList.add('active');
+        });
+      });
+    });
+
+    function log(msg) {
+      document.getElementById('log').textContent = msg;
+    }
+
+    function notify(msg) {
+      log(msg);
+      const card = document.getElementById('topCard');
+      const oldBorder = card.style.border;
+      card.style.border = '1px solid #dc3545';
+      setTimeout(() => { card.style.border = oldBorder; }, 1500);
+    }
+
+    function dateOnly(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+
+    function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+
+    function parseDateCell(val) {
+      if (val == null || val === "") return null;
+      if (val instanceof Date) return dateOnly(val);
+      if (typeof val === "number") {
+        const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+        const ms = val * 24 * 60 * 60 * 1000;
+        return dateOnly(new Date(excelEpoch.getTime() + ms));
+      }
+      const s = String(val).trim();
+      if (!s) return null;
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return null;
+      return dateOnly(d);
+    }
+
+    function renderTable(containerId, summary, headers) {
+      const cont = document.getElementById(containerId);
+      cont.innerHTML = "";
+      if (!summary || !summary.length) {
+        cont.textContent = "No data for selected period.";
+        return;
+      }
+
+      const table = document.createElement('table');
+      const thead = document.createElement('thead');
+      const tbody = document.createElement('tbody');
+
+      const trh = document.createElement('tr');
+      headers.forEach(h => {
+        const th = document.createElement('th');
+        th.textContent = h;
+        th.classList.add('sticky-header');
+        trh.appendChild(th);
+      });
+      thead.appendChild(trh);
+
+      summary.forEach(row => {
+        const tr = document.createElement('tr');
+        headers.forEach(h => {
+          const td = document.createElement('td');
+          td.textContent = row[h];
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+
+      table.appendChild(thead);
+      table.appendChild(tbody);
+      cont.appendChild(table);
+    }
+
+    function renderKPIs(summary) {
+      const kpiCard = document.getElementById('kpiCard');
+      const grid = document.getElementById('kpiGrid');
+      grid.innerHTML = "";
+      if (!summary || !summary.length) {
+        kpiCard.style.display = 'none';
+        return;
+      }
+
+      const totals = summary.reduce((acc, d) => {
+        acc.opening += +d["Opening HC"] || 0;
+        acc.closing += +d["Closing HC"] || 0;
+        acc.joiners += +d["New Joiners"] || 0;
+        acc.attr += +d["Attrition HC"] || 0;
+        acc.infant += +d["Infant Attrition HC"] || 0;
+        return acc;
+      }, { opening:0, closing:0, joiners:0, attr:0, infant:0 });
+
+      const days = summary.length;
+      const avgHC = (totals.opening + totals.closing) / (2 * days);
+      const attrPct = avgHC ? (totals.attr / avgHC * 100) : 0;
+      const infantPct = totals.joiners ? (totals.infant / totals.joiners * 100) : 0;
+
+      const kpis = [
+        { label: "Total Days", value: days },
+        { label: "Avg Headcount", value: isNaN(avgHC) ? 0 : avgHC.toFixed(0) },
+        { label: "Total Joiners", value: totals.joiners },
+        { label: "Total Attrition HC", value: totals.attr },
+        { label: "Attrition %", value: attrPct.toFixed(2) + "%" },
+        { label: "Infant Attrition HC", value: totals.infant },
+        { label: "Infant %", value: infantPct.toFixed(2) + "%" }
+      ];
+
+      kpis.forEach(k => {
+        const card = document.createElement('div');
+        card.className = "kpi-card";
+        card.innerHTML = `<div class="kpi-value">${k.value}</div><div class="kpi-label">${k.label}</div>`;
+        grid.appendChild(card);
+      });
+
+      kpiCard.style.display = 'block';
+    }
+
+    function clearData() {
+      globalSummary = null;
+      globalTypeSummary = null;
+      document.getElementById('tableContainer').textContent = "No data yet. Upload master-dump.xlsx and generate.";
+      document.getElementById('typeTableContainer').textContent = "No data yet. Upload master-dump.xlsx and generate.";
+      document.getElementById('downloadLink').style.display = "none";
+      document.getElementById('kpiCard').style.display = "none";
+      document.getElementById('fileInput').value = "";
+      log("Cleared.");
+    }
+
+    function downloadSample() {
+      const sampleRows = [
+        {
+          "Employee ID":"E001",
+          "Employee Name":"Sample Name 1",
+          "Gender":"Female",
+          "Date of Joining":"2025-12-01",
+          "Exit Date":"",
+          "Status":"Active",
+          "Business Unit":"DL-Jasmine",
+          "Department":"Production",
+          "Location":"Hosur",
+          "Employment Type":"ODL",
+          "Designation":"Operator"
+        },
+        {
+          "Employee ID":"E002",
+          "Employee Name":"Sample Name 2",
+          "Gender":"Male",
+          "Date of Joining":"2025-12-02",
+          "Exit Date":"2025-12-10",
+          "Status":"Left",
+          "Business Unit":"DL-Jasmine",
+          "Department":"Production",
+          "Location":"Hosur",
+          "Employment Type":"CDL",
+          "Designation":"Operator"
+        }
+      ];
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(sampleRows);
+      XLSX.utils.book_append_sheet(wb, ws, "master dump");
+      XLSX.writeFile(wb, "sample_master_dump.xlsx");
+    }
+
+    function processFile() {
+      const fileInput = document.getElementById('fileInput');
+      const fromDateStr = document.getElementById('fromDate').value;
+      const toDateStr   = document.getElementById('toDate').value;
+
+      document.getElementById('tableContainer').innerHTML = "Processing...";
+      document.getElementById('typeTableContainer').innerHTML = "Processing...";
+      document.getElementById('downloadLink').style.display = "none";
+      log("");
+
+      if (!fileInput.files.length) {
+        notify("Please choose master-dump.xlsx before clicking Generate Summary.");
+        document.getElementById('tableContainer').innerHTML = "No data yet. Upload master-dump.xlsx and generate.";
+        document.getElementById('typeTableContainer').innerHTML = "No data yet. Upload master-dump.xlsx and generate.";
+        return;
+      }
+      if (!fromDateStr || !toDateStr) {
+        notify("Please select both From date and To date.");
+        document.getElementById('tableContainer').innerHTML = "No data yet. Upload master-dump.xlsx and generate.";
+        document.getElementById('typeTableContainer').innerHTML = "No data yet. Upload master-dump.xlsx and generate.";
+        return;
+      }
+
+      const fromDate = dateOnly(new Date(fromDateStr));
+      const toDate   = dateOnly(new Date(toDateStr));
+      const file = fileInput.files[0];
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const sheetName = workbook.SheetNames[0];
+          const sheet = workbook.Sheets[sheetName];
+          const rows = XLSX.utils.sheet_to_json(sheet, { raw: true });
+
+          rows.forEach(r => {
+            r.DOJ = parseDateCell(r["Date of Joining"]);
+            r.Exit = parseDateCell(r["Exit Date"]);
+            r.GenderNorm = (r["Gender"] || "").toString().toLowerCase();
+            r.EmpType = (r["Employment Type"] || "").toString().trim();
+          });
+
+          const summary = [];
+          const typeMap = {};
+
+          for (let d = fromDate; d <= toDate; d = addDays(d, 1)) {
+            const day = dateOnly(d);
+            const dateStr = day.toISOString().slice(0,10);
+
+            const joiners = rows.filter(r => r.DOJ && r.DOJ.getTime() === day.getTime());
+            const joinF   = joiners.filter(r => r.GenderNorm === "female");
+            const joinM   = joiners.filter(r => r.GenderNorm === "male");
+
+            const leavers = rows.filter(r => r.Exit && r.Exit.getTime() === day.getTime());
+            const leaveF  = leavers.filter(r => r.GenderNorm === "female");
+            const leaveM  = leavers.filter(r => r.GenderNorm === "male");
+
+            const opening = rows.filter(r => {
+              if (!r.DOJ) return false;
+              if (r.DOJ >= day) return false;
+              if (!r.Exit) return true;
+              return r.Exit >= day;
+            });
+
+            const openingHC = opening.length;
+            const openingF  = opening.filter(r => r.GenderNorm === "female");
+            const openingM  = opening.filter(r => r.GenderNorm === "male");
+
+            const closingHC = openingHC + joiners.length - leavers.length;
+            const closingF  = openingF.length + joinF.length - leaveF.length;
+            const closingM  = openingM.length + joinM.length - leaveM.length;
+
+            const infant = leavers.filter(r => {
+              if (!r.DOJ || !r.Exit) return false;
+              const diffDays = (r.Exit - r.DOJ) / (1000*60*60*24);
+              return diffDays <= 30;
+            });
+            const infantHC = infant.length;
+
+            const attrHC  = leavers.length;
+            const attrHCF = leaveF.length;
+            const attrHCM = leaveM.length;
+
+            const avgHC  = (openingHC + closingHC) / 2 || 0;
+            const attrPct = avgHC ? (attrHC / avgHC * 100) : 0;
+
+            summary.push({
+              "Date": dateStr,
+              "Opening HC": openingHC,
+              "Closing HC": closingHC,
+              "Closing HC Female": closingF,
+              "Closing HC Male": closingM,
+              "New Joiners": joiners.length,
+              "New Joiners Female": joinF.length,
+              "New Joiners Male": joinM.length,
+              "Attrition HC": attrHC,
+              "Attrition HC Female": attrHCF,
+              "Attrition HC Male": attrHCM,
+              "Attrition %": attrPct.toFixed(2),
+              "Infant Attrition HC": infantHC
+            });
+
+            const closingEmployees = rows.filter(r => {
+              if (!r.DOJ) return false;
+              if (r.DOJ > day) return false;
+              if (!r.Exit) return true;
+              return r.Exit > day;
+            });
+
+            const typeCounts = {};
+            closingEmployees.forEach(r => {
+              const t = r.EmpType || "Unknown";
+              typeCounts[t] = (typeCounts[t] || 0) + 1;
+            });
+            typeMap[dateStr] = typeCounts;
+          }
+
+          const typeRows = [];
+          Object.entries(typeMap).forEach(([date, counts]) => {
+            Object.entries(counts).forEach(([type, cnt]) => {
+              typeRows.push({
+                "Date": date,
+                "Employment Type": type,
+                "Closing HC": cnt
+              });
+            });
+          });
+
+          globalSummary = summary;
+          globalTypeSummary = typeRows;
+
+          const headHeaders = [
+            "Date","Opening HC","Closing HC","Closing HC Female","Closing HC Male",
+            "New Joiners","New Joiners Female","New Joiners Male",
+            "Attrition HC","Attrition HC Female","Attrition HC Male",
+            "Attrition %","Infant Attrition HC"
+          ];
+          renderTable("tableContainer", summary, headHeaders);
+
+          const typeHeaders = ["Date","Employment Type","Closing HC"];
+          renderTable("typeTableContainer", typeRows, typeHeaders);
+
+          renderKPIs(summary);
+
+          const wb = XLSX.utils.book_new();
+          const ws1 = XLSX.utils.json_to_sheet(summary);
+          XLSX.utils.book_append_sheet(wb, ws1, "Daily Summary");
+          const ws2 = XLSX.utils.json_to_sheet(typeRows);
+          XLSX.utils.book_append_sheet(wb, ws2, "Employee Type");
+          const wbout = XLSX.write(wb, { bookType:'xlsx', type:'array' });
+          const blob = new Blob([wbout], { type:'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          const link = document.getElementById('downloadLink');
+          link.href = url;
+          link.download = 'daily_headcount_summary_from_master.xlsx';
+          link.style.display = "inline";
+
+          log("Summary days: " + summary.length + " | Type rows: " + typeRows.length);
+        } catch (err) {
+          log("Error: " + err.message);
+          document.getElementById('tableContainer').textContent = "Error processing file.";
+          document.getElementById('typeTableContainer').textContent = "Error processing file.";
+        }
+      };
+
+      reader.readAsArrayBuffer(file);
+    }
+  </script>
+</body>
+</html>
